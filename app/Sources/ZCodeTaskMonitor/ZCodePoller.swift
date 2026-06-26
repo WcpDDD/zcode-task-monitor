@@ -105,44 +105,53 @@ final class ZCodePoller {
     // MARK: - Classification
 
     private func classify(row: TaskRow, live: LiveState?) -> TaskStatus {
-        // If we have no live data, fall back to the task-list status.
-        guard let live = live, !live.turnStatus.isEmpty else {
-            switch row.taskStatus {
-            case "completed": return .completed
-            default: return .running
-            }
-        }
-
-        switch live.turnStatus {
-        case "completed", "cancelled":
+        // Source of truth for "is this task still open": the tasks-index
+        // task_status. ZCode marks a task 'running' while its tab is open and
+        // considered active, even if the current turn has finished (turns are
+        // per-message; a task sits 'running' between user messages). The
+        // turn-level data is only used to refine running -> waiting (HITL).
+        switch row.taskStatus {
+        case "completed":
             return .completed
-        case "error":
-            return .error
         case "running":
-            // Fast path: an interactive tool (AskUserQuestion) still running
-            // is an explicit "waiting on user" signal — no need to wait the
-            // inactivity threshold.
-            if live.lastToolStatus == "running",
-               let name = live.lastToolName as String?, name.isEmpty == false,
-               isInteractiveTool(name) {
-                return .waiting
-            }
-            // Otherwise: waiting if the turn is running but has had no
-            // tool/model activity for >= the threshold.
-            let lastMs = max(live.lastToolAtMs ?? 0, live.lastModelAtMs ?? 0)
-            if lastMs == 0 {
-                // No activity ever recorded this turn — use the turn start as
-                // the reference (approximated by updatedAt) to avoid instant
-                // false-positive. If updatedAt itself is older than the
-                // threshold, treat as waiting.
-                let age = Date().timeIntervalSince(Date(ms: row.updatedAtMs))
-                return age >= hitlInactivitySeconds ? .waiting : .running
-            }
-            let age = Date().timeIntervalSince(Date(ms: lastMs))
-            return age >= hitlInactivitySeconds ? .waiting : .running
+            return classifyRunning(row: row, live: live)
         default:
+            // Unknown / archived-ish: treat as running if the task list says so.
+            return row.taskStatus == "completed" ? .completed : classifyRunning(row: row, live: live)
+        }
+    }
+
+    /// Given a task the task-list marks as 'running', decide running vs
+    /// waiting (HITL) using live turn/tool activity.
+    private func classifyRunning(row: TaskRow, live: LiveState?) -> TaskStatus {
+        guard let live = live, !live.turnStatus.isEmpty else {
+            // No live data available — can't detect HITL; assume running.
             return .running
         }
+
+        // Only an actively-running turn can be "waiting on the user".
+        guard live.turnStatus == "running" else {
+            // Turn is completed/cancelled/error, but the task is still open.
+            // The task is idle between turns — show as running (not completed).
+            return live.turnStatus == "error" ? .error : .running
+        }
+
+        // Fast path: an interactive tool (AskUserQuestion / ExitPlanMode)
+        // still running is an explicit "waiting on user" signal.
+        if live.lastToolStatus == "running",
+           let name = live.lastToolName as String?, name.isEmpty == false,
+           isInteractiveTool(name) {
+            return .waiting
+        }
+        // Inference path: turn running but no tool/model activity for >= threshold.
+        let lastMs = max(live.lastToolAtMs ?? 0, live.lastModelAtMs ?? 0)
+        let age: TimeInterval
+        if lastMs > 0 {
+            age = Date().timeIntervalSince(Date(ms: lastMs))
+        } else {
+            age = Date().timeIntervalSince(Date(ms: row.updatedAtMs))
+        }
+        return age >= hitlInactivitySeconds ? .waiting : .running
     }
 
     /// Tools that, when still running, unambiguously mean "waiting on the user".

@@ -37,10 +37,24 @@ yellow() { printf "\033[33m%s\033[0m\n" "$*"; }
 red() { printf "\033[31m%s\033[0m\n" "$*" >&2; }
 
 # ---- preflight ---------------------------------------------------------------
+# If the prebuilt .app isn't present (e.g. a fresh git clone, where dist/ is
+# gitignored), build it from source on the fly. Requires Swift 5.9+ / Xcode.
 if [[ ! -d "$APP_SRC" ]]; then
-  red "ERROR: $APP_SRC not found."
-  red "Run ./scripts/build-app.sh first, or download a release build."
-  exit 1
+  if [[ ! -d "$REPO_ROOT/app/Package.swift" ]] && [[ ! -f "$REPO_ROOT/app/Package.swift" ]]; then
+    red "ERROR: neither a prebuilt app nor app sources found."
+    red "Expected $APP_SRC or $REPO_ROOT/app/Package.swift"
+    exit 1
+  fi
+  if ! command -v swift >/dev/null 2>&1; then
+    red "ERROR: no prebuilt app at $APP_SRC and 'swift' not found."
+    red "Install Xcode Command Line Tools, or download a Release build."
+    exit 1
+  fi
+  green "  • No prebuilt app found — building from source (needs Swift/Xcode)…"
+  ( cd "$REPO_ROOT" && ./scripts/build-app.sh ) || {
+    red "ERROR: build-app.sh failed."
+    exit 1
+  }
 fi
 
 if [[ ! -d "$PLUGIN_SRC/.zcode-plugin" ]]; then
@@ -140,20 +154,60 @@ cp "$PLUGIN_SRC/dev.zcode.taskmonitor.plist" "$LAUNCH_AGENT_PLIST"
 launchctl unload "$LAUNCH_AGENT_PLIST" >/dev/null 2>&1 || true
 launchctl load "$LAUNCH_AGENT_PLIST" >/dev/null 2>&1 || true
 
-# ---- 6. launch now -----------------------------------------------------------
-green "  • Launching ZCodeTaskMonitor"
-/usr/bin/open -a "$APP_DEST" >/dev/null 2>&1 || true
+# ---- 6. detect launch context & guide accordingly ---------------------------
+# IMPORTANT: the floating panel CANNOT render when launched as a child of a
+# ZCode host process (the host sandbox blocks child GUI windows). So if this
+# script is running inside a ZCode session, we do NOT attempt to launch the app
+# here (it would start but stay invisible). Instead we tell the user to launch
+# from a context outside ZCode (system Terminal / Finder / login).
+in_zcode=0
+if [[ -n "${ZCODE_SANDBOX:-}" || -n "${ZCODE_PROJECT_DIR:-}" ]] \
+   || pgrep -f "zcode-host" >/dev/null 2>&1; then
+  in_zcode=1
+fi
 
+if [[ "$in_zcode" -eq 0 ]]; then
+  green "  • Launching ZCodeTaskMonitor"
+  /usr/bin/open -a "$APP_DEST" >/dev/null 2>&1 || true
+fi
+
+if [[ "$in_zcode" -eq 1 ]]; then
+cat <<EOF
+
+$(green "✅ Installation complete — but ONE manual step remains:")
+
+You're running this inside a ZCode session. ZCode's host process sandboxes its
+children, so the floating panel launched from here would be invisible. To see
+the panel, launch it from OUTSIDE ZCode — either:
+
+  • Open the macOS Terminal app (not the one inside ZCode) and run:
+      open $APP_DEST
+
+  • Or just log out and back in — the LaunchAgent will start it at login
+    (parent = launchd, not ZCode), and it will render correctly.
+
+  • Or double-click ZCodeTaskMonitor in /Applications from Finder.
+
+$(yellow "Once started this way, the panel will float top-right over everything and")
+$(yellow "auto-relaunch at every login via the LaunchAgent.")
+
+$(yellow "Uninstall: ./scripts/uninstall.sh")
+EOF
+else
 cat <<EOF
 
 $(green "✅ Done.")
 
-$(green "Next steps:")
-  • A new menu-bar icon appeared in the top-right of your screen. Click it to see all tasks.
-  • Restart ZCode (or start a new session) — the SessionStart hook will keep the app alive.
-  • The app also auto-launches at login via the LaunchAgent.
+A floating panel should now appear in the top-right corner of your screen,
+showing all in-progress ZCode tasks (status dot, elapsed time, and a "⚠ 可能阻塞"
+badge when a task looks stuck / waiting for input). Click a task to open its
+workspace in ZCode; click the × to hide the panel (reopen via the menu-bar icon).
 
-$(yellow "Note: first launch will ask for notification permission — allow it to get HITL alerts.")
+It also auto-launches at login via the LaunchAgent.
 
-$(yellow "To uninstall: ./scripts/uninstall.sh")
+$(yellow "Note: the first launch may prompt for notification permission — allow it to")
+$(yellow "get HITL alerts when a task starts waiting for your input.")
+
+$(yellow "Uninstall: ./scripts/uninstall.sh")
 EOF
+fi

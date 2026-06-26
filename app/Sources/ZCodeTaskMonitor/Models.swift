@@ -48,6 +48,36 @@ struct TaskSnapshot: Identifiable, Hashable {
         return url.lastPathComponent.isEmpty ? workspacePath : url.lastPathComponent
     }
 
+    /// Human-readable elapsed duration since the task was last updated (used as
+    /// a proxy for "how long this task has been in its current state").
+    var elapsedLabel: String {
+        let secs = Date().timeIntervalSince(updatedAt)
+        if secs < 60 { return "<1m" }
+        let mins = Int(secs / 60)
+        if mins < 60 { return "\(mins)m" }
+        let hours = mins / 60
+        let remMins = mins % 60
+        if hours < 24 { return "\(hours)h\(remMins)m" }
+        let days = hours / 24
+        return "\(days)d\(hours % 24)h"
+    }
+
+    /// A soft "possibly stuck" hint: a running task that has shown no activity
+    /// for a while may be blocked (waiting on user, hung, or long-thinking).
+    /// This is purely advisory — surfaced as a small warning badge in the row.
+    var blockingRisk: Bool {
+        switch status {
+        case .waiting:
+            return true
+        case .running:
+            // Running but idle beyond the HITL threshold looks stuck.
+            guard let last = lastActivityAt else { return false }
+            return Date().timeIntervalSince(last) >= hitlInactivitySeconds
+        default:
+            return false
+        }
+    }
+
     /// True when a status change should surface a notification.
     static func isNotableTransition(from old: TaskStatus, to new: TaskStatus) -> Bool {
         // Any transition INTO waiting is notable (that's the HITL alert).
