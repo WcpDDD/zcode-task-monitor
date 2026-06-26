@@ -1,0 +1,11 @@
+# Build artifacts
+app/.build/
+app/.swiftpm/
+app/Package.resolved
+
+# Produced .app bundle (built, not committed)
+dist/
+
+# macOS
+.DS_Store
+*.swp

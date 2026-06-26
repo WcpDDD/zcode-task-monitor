@@ -1,0 +1,11 @@
+{
+  "name": "task-monitor",
+  "version": "0.1.0",
+  "description": "macOS 菜单栏浮窗，实时显示所有 ZCode 任务状态，任务进入等待输入(HITL)时弹出原生通知。点击任务可跳转到对应工作区。",
+  "author": {
+    "name": "WcpDDD"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/WcpDDD/zcode-task-monitor",
+  "repository": "https://github.com/WcpDDD/zcode-task-monitor"
+}
